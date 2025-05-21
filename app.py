@@ -1,79 +1,75 @@
-from flask import Flask, render_template
-import numpy as np
+import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import yfinance as yf
-import time
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from sklearn.metrics import mean_squared_error
-import math
-import io
-import base64
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
 
-app = Flask(__name__)
+st.title("Flexible AI-Driven Stock Price Prediction App")
 
-ticker = 'TSLA'
-start_date = '2010-01-01'
-end_date = '2025-01-01'
+uploaded_file = st.file_uploader("Upload your stock CSV file", type=["csv"])
 
-def download_stock_data(ticker, start, end):
-    data = yf.download(ticker, start=start, end=end, auto_adjust=True)
-    return data
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+    st.subheader("Columns Found in Dataset")
+    st.write(list(df.columns))
 
-stock_data = download_stock_data(ticker, start_date, end_date)
+    date_col = st.selectbox("Select Date column", options=df.columns)
+    price_col = st.selectbox("Select Price column", options=df.columns)
 
-data = stock_data[['Close']].dropna()
-scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_data = scaler.fit_transform(data)
+    try:
+        # Preprocess
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.sort_values(date_col)
+        df = df.dropna(subset=[date_col, price_col])
+        df = df.reset_index(drop=True)
 
-def create_dataset(dataset, time_step=60):
-    X, y = [], []
-    for i in range(time_step, len(dataset)):
-        X.append(dataset[i - time_step:i, 0])
-        y.append(dataset[i, 0])
-    return np.array(X), np.array(y)
+        st.subheader("Dataset Preview after Preprocessing")
+        st.write(df.head())
 
-time_step = 60
-X, y = create_dataset(scaled_data, time_step)
-X = X.reshape(X.shape[0], X.shape[1], 1)
+        # Visualization
+        st.subheader(f"{price_col} Over Time")
+        fig, ax = plt.subplots()
+        ax.plot(df[date_col], df[price_col], label=price_col, color='blue')
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Price')
+        ax.grid(True)
+        ax.legend()
+        st.pyplot(fig)
 
-train_size = int(len(X) * 0.8)
-X_train, X_test = X[:train_size], X[train_size:]
-y_train, y_test = y[:train_size], y[train_size:]
+        # Feature Engineering
+        df['Days'] = (df[date_col] - df[date_col].min()).dt.days
+        X = df[['Days']]
+        y = df[price_col]
 
-model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
-    Dropout(0.2),
-    LSTM(50),
-    Dropout(0.2),
-    Dense(1)
-])
-model.compile(optimizer='adam', loss='mean_squared_error')
-model.fit(X_train, y_train, epochs=20, batch_size=32, validation_data=(X_test, y_test), verbose=1)
+        # Model Training
+        test_size = st.slider("Test Data Size (%)", min_value=10, max_value=50, value=20)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size/100, shuffle=False)
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
 
-predicted_stock_price = model.predict(X_test)
-predicted_stock_price = scaler.inverse_transform(predicted_stock_price)
-y_test_actual = scaler.inverse_transform(y_test.reshape(-1, 1))
+        # Evaluation
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
 
-fig, ax = plt.subplots(figsize=(14, 7))
-ax.plot(stock_data.index[train_size+time_step:], y_test_actual, label="Actual Stock Price", color='blue')
-ax.plot(stock_data.index[train_size+time_step:], predicted_stock_price, label="Predicted Stock Price", color='red')
-ax.set_title(f'{ticker} Stock Price Prediction')
-ax.set_xlabel('Date')
-ax.set_ylabel('Stock Price')
-ax.legend()
+        st.subheader("Model Evaluation")
+        st.write(f"Mean Squared Error: {mse:.2f}")
+        st.write(f"R² Score: {r2:.4f}")
 
-img = io.BytesIO()
-fig.savefig(img, format='png')
-img.seek(0)
-plot_url = base64.b64encode(img.getvalue()).decode()
+        # Prediction Visualization
+        st.subheader("Actual vs Predicted Prices")
+        fig2, ax2 = plt.subplots()
+        ax2.plot(df[date_col].iloc[-len(y_test):], y_test, label='Actual', color='blue')
+        ax2.plot(df[date_col].iloc[-len(y_test):], y_pred, label='Predicted', color='red', linestyle='--')
+        ax2.set_xlabel('Date')
+        ax2.set_ylabel('Price')
+        ax2.legend()
+        ax2.grid(True)
+        st.pyplot(fig2)
 
-@app.route('/')
-def index():
-    rmse = math.sqrt(mean_squared_error(y_test_actual, predicted_stock_price))
-    return render_template('index.html', plot_url=plot_url, rmse=rmse)
+    except Exception as e:
+        st.error(f"Error processing data: {e}")
 
-if __name__ == "__main__":
-    app.run(debug=True)
+else:
+    st.info("Please upload a CSV file to start.")
